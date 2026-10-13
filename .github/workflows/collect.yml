@@ -1,0 +1,69 @@
+name: Collect AI Sources
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "How many hours back to keep items (override)"
+        required: false
+        default: "30"
+  schedule:
+    # 00:02 UTC = 08:02 Beijing, six minutes ahead of the daily-briefing job so
+    # sources.json is already fresh when n8n reads it.
+    - cron: "2 0 * * *"
+  push:
+    paths:
+      - "scripts/collect.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-sources
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run collector
+        env:
+          LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || '30' }}
+          REPO: ${{ github.repository }}
+        run: python scripts/collect.py
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A sources.json img/
+          if git diff --cached --quiet; then
+            echo "Nothing new today."
+            exit 0
+          fi
+          git commit -m "chore: collect sources $(date -u +%Y-%m-%d) [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected; rebasing onto latest."
+            git fetch origin ${{ github.ref_name }}
+            git rebase origin/${{ github.ref_name }} || {
+              git checkout --theirs sources.json || true
+              git add sources.json
+              git rebase --continue || git rebase --abort
+            }
+            sleep 3
+          done
+          echo "::error::Push failed after 5 attempts."
+          exit 1
