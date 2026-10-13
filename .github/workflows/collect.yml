@@ -45,7 +45,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A sources.json img/
+          git add -A sources.json img/ archive/
           if git diff --cached --quiet; then
             echo "Nothing new today."
             exit 0
@@ -59,8 +59,8 @@ jobs:
             echo "Push rejected; rebasing onto latest."
             git fetch origin ${{ github.ref_name }}
             git rebase origin/${{ github.ref_name }} || {
-              git checkout --theirs sources.json || true
-              git add sources.json
+              git checkout --theirs sources.json archive/index.json || true
+              git add sources.json archive/
               git rebase --continue || git rebase --abort
             }
             sleep 3

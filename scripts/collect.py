@@ -35,8 +35,12 @@ BRANCH = os.getenv("BRANCH", "main")
 RAW_BASE = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}"
 
 IMG_DIR = "img"
+ARCHIVE_DIR = "archive"
 OUT_FILE = "sources.json"
-RETENTION_DAYS = 14
+# Images and archived days share one window, otherwise an older edition on the site
+# would reference images that have already been pruned.
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
+ARCHIVE_KEEP_DAYS = RETENTION_DAYS
 MAX_IMAGES_PER_ITEM = 8
 MAX_TOTAL_IMAGES = 120
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(2 * 1024 * 1024)))
@@ -421,6 +425,10 @@ def main() -> int:
     with open(OUT_FILE, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
 
+    # Keep one file per day so the site can show past editions. sources.json stays
+    # the "latest" pointer so n8n's URL never has to change.
+    archive_day(payload)
+
     print(
         f"✓ wrote {OUT_FILE}: {len(deduped)} article(s), {mirror.count} image(s) mirrored, "
         f"{removed} old day-folder(s) pruned"
@@ -428,6 +436,42 @@ def main() -> int:
     if failures:
         print("⚠ failures: " + "; ".join(failures))
     return 0 if deduped else 1
+
+
+def archive_day(payload: dict) -> None:
+    """Write archive/<date>.json and refresh archive/index.json (newest first)."""
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    day = payload["date"]
+    with open(os.path.join(ARCHIVE_DIR, f"{day}.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+
+    entries = []
+    for name in sorted(os.listdir(ARCHIVE_DIR), reverse=True):
+        if not name.endswith(".json") or name == "index.json":
+            continue
+        date = name[: -len(".json")]
+        try:
+            with open(os.path.join(ARCHIVE_DIR, name), encoding="utf-8") as fh:
+                head = json.load(fh)
+            entries.append(
+                {
+                    "date": date,
+                    "count": head.get("count", 0),
+                    "images": sum(len(a.get("images") or []) for a in head.get("articles") or []),
+                }
+            )
+        except Exception:  # noqa: BLE001 - a corrupt day must not break the index
+            entries.append({"date": date, "count": 0, "images": 0})
+
+    entries = entries[:ARCHIVE_KEEP_DAYS]
+    with open(os.path.join(ARCHIVE_DIR, "index.json"), "w", encoding="utf-8") as fh:
+        json.dump(entries, fh, ensure_ascii=False, indent=2)
+
+    # Drop archive days older than the window we publish.
+    cutoff = (NOW - timedelta(days=ARCHIVE_KEEP_DAYS)).strftime("%Y-%m-%d")
+    for name in os.listdir(ARCHIVE_DIR):
+        if name.endswith(".json") and name != "index.json" and name[: -len(".json")] < cutoff:
+            os.remove(os.path.join(ARCHIVE_DIR, name))
 
 
 if __name__ == "__main__":
